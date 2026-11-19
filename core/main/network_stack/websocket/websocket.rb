@@ -101,7 +101,7 @@ module BeEF
                   unless msg_hash['cookie'].nil?
                     print_debug('[WebSocket] Browser says hello! WebSocket is running')
                     # insert new connection in activesocket
-                    @@activeSocket[(msg_hash['cookie']).to_s] = ws
+                    @@activeSocket[msg_hash['cookie'].to_s] = ws
                     print_debug("[WebSocket] activeSocket content [#{@@activeSocket}]")
 
                     hb_session = msg_hash['cookie']
@@ -134,8 +134,18 @@ module BeEF
                     hooked_browser.save!
 
                     # Check if new modules need to be sent
-                    zombie_commands = BeEF::Core::Models::Command.where(hooked_browser_id: hooked_browser.id, instructions_sent: false)
-                    zombie_commands.each { |command| add_command_instructions(command, hooked_browser) }
+                    sm_enabled = BeEF::Core::Handlers::SessionReaper.enabled?
+                    zombie_commands = if sm_enabled
+                                        BeEF::DeliveryManager.pending_for(hooked_browser)
+                                      else
+                                        BeEF::Core::Models::Command.where(hooked_browser_id: hooked_browser.id, instructions_sent: false).to_a
+                                      end
+                    ack_timeout = BeEF::Core::Configuration.instance
+                                                           .get('beef.session_management.ack_timeout').to_i
+                    zombie_commands.each do |command|
+                      add_command_instructions(command, hooked_browser)
+                      BeEF::DeliveryManager.mark_sent(command, ack_timeout) if sm_enabled
+                    end
 
                     # @todo antisnatchor:
                     # @todo - re-use the pre_hook_send callback mechanisms to have a generic check for multipl extensions
@@ -158,6 +168,11 @@ module BeEF
                   # the zombie is probably trying to return command module results
                   # or call back to a running BeEF extension
                   unless msg_hash['handler'].nil?
+                    # ACK receipts use the same websocket message envelope as results.
+                    if msg_hash['handler'] == '/ack'
+                      BeEF::DeliveryManager.ack(msg_hash['bh'], msg_hash['cid'].to_i)
+                      next
+                    end
                     # Call the handler for websocket cmd response
                     # Base64 decode, parse JSON, and forward
                     execute(msg_hash)

@@ -21,6 +21,8 @@ require 'core/main/handlers/modules/command'
 require 'core/main/handlers/commands'
 require 'core/main/handlers/hookedbrowsers'
 require 'core/main/handlers/browserdetails'
+require 'core/main/handlers/acknowledgements'
+require 'core/main/handlers/session_api'
 
 # @note Include the network stack
 require 'core/main/network_stack/handlers/dynamicreconstruction'
@@ -35,6 +37,8 @@ require 'core/modules'
 require 'core/extension'
 require 'core/extensions'
 require 'core/hbmanager'
+require 'core/session_manager'
+require 'core/delivery_manager'
 
 ## @note Include RESTful API
 require 'core/main/rest/handlers/hookedbrowsers'

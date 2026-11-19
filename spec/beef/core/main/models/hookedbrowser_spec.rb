@@ -41,4 +41,31 @@ RSpec.describe BeEF::Core::Models::HookedBrowser do
       expect(hb.count).to eq(4)
     end
   end
+
+  describe 'lifecycle columns' do
+    it 'defaults to the active legacy state' do
+      hb = described_class.create!(session: 'lifecycle', ip: '127.0.0.1')
+      expect(hb.effective_state).to eq('active')
+      expect(hb).to be_active
+    end
+
+    it 'tracks stale and closed states' do
+      hb = described_class.create!(session: 'states', ip: '127.0.0.1', state: 'stale')
+      expect(hb).to be_stale
+      hb.update!(state: 'closed')
+      expect(hb.reload).to be_closed
+    end
+
+    it 'serializes the operator list as json' do
+      hb = described_class.create!(session: 'owners', ip: '127.0.0.1', owner: 'alice')
+      hb.operators_list = %w[alice bob]
+      hb.save!
+      expect(hb.reload.operators_list).to eq(%w[alice bob])
+    end
+
+    it 'tolerates malformed operator json' do
+      hb = described_class.create!(session: 'bad-json', ip: '127.0.0.1', operators: 'not-json')
+      expect(hb.operators_list).to eq([])
+    end
+  end
 end

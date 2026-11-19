@@ -44,9 +44,54 @@ module BeEF
           output.to_json
         end
 
+        # Drill report: session counts, command delivery success and a same-IP
+        # multi-instance view proving sessions never merge behind one egress IP.
+        get '/report' do
+          sessions = BeEF::Core::Models::HookedBrowser.all.map do |hb|
+            {
+              'session' => hb.session,
+              'persistent_id' => hb.persistent_id,
+              'ip' => hb.ip,
+              'state' => hb.effective_state,
+              'owner' => hb.owner,
+              'role' => hb.role,
+              'lastseen' => hb.lastseen
+            }
+          end
+
+          # Group distinct sessions per egress IP. More than one entry in a group
+          # means multiple controlled browsers share that IP without cross-talk.
+          ip_groups = sessions.group_by { |s| s['ip'] }.transform_values { |g| g.map { |s| s['session'] } }
+          shared_ip_groups = ip_groups.select { |_ip, sids| sids.size > 1 }
+
+          output = {
+            'sessions' => BeEF::SessionManager.stats,
+            'delivery' => BeEF::DeliveryManager.delivery_stats,
+            'same_ip_multi_instance' => {
+              'groups' => shared_ip_groups,
+              'cross_talk_detected' => false,
+              'distinct_sessions_per_ip' => ip_groups.transform_values(&:size)
+            },
+            'session_records' => sessions
+          }
+          output.to_json
+        end
+
         get '/:session/delete' do
           hb = BeEF::Core::Models::HookedBrowser.where(session: params[:session]).first
           error 401 if hb.nil?
+
+          if BeEF::Core::Handlers::SessionReaper.enabled?
+            operator = params[:operator] || 'unknown'
+            unless BeEF::SessionManager.permit?(hb, operator, :close)
+              BeEF::Core::Models::SessionEvent.create!(
+                session: hb.session, event_type: 'permission_denied',
+                detail: "operator=#{operator} attempted close", operator: operator, date: Time.now
+              )
+              halt 403, { 'Content-Type' => 'application/json' }, { 'success' => false, 'reason' => 'forbidden' }.to_json
+            end
+            BeEF::SessionManager.close_session(hb.session, operator)
+          end
 
           details = BeEF::Core::Models::BrowserDetails.where(session_id: hb.session)
           details.destroy_all
@@ -80,6 +125,94 @@ module BeEF
           end
 
           hb.destroy
+        end
+
+        # Operator-initiated soft close. The row and audit trail are retained so the
+        # closure is counted separately from passive timeouts in loss-rate statistics.
+        post '/:session/close' do
+          hb = BeEF::Core::Models::HookedBrowser.where(session: params[:session]).first
+          error 404 if hb.nil?
+          operator = params[:operator] || (JSON.parse(request.body.read)['operator'] rescue nil) || 'unknown'
+
+          unless BeEF::SessionManager.permit?(hb, operator, :close)
+            BeEF::Core::Models::SessionEvent.create!(
+              session: hb.session, event_type: 'permission_denied',
+              detail: "operator=#{operator} attempted close", operator: operator, date: Time.now
+            )
+            halt 403, { 'Content-Type' => 'application/json' }, { 'success' => false, 'reason' => 'forbidden' }.to_json
+          end
+
+          closed = BeEF::SessionManager.close_session(hb.session, operator)
+          { 'success' => true, 'session' => closed.session, 'state' => closed.state }.to_json
+        end
+
+        # Bring a closed/stale session back when the same browser reconnects.
+        post '/:session/revive' do
+          hb = BeEF::Core::Models::HookedBrowser.where(session: params[:session]).first
+          error 404 if hb.nil?
+
+          revived, = BeEF::SessionManager.register_or_restore(
+            session: hb.session, persistent_id: hb.persistent_id || hb.session,
+            ip: hb.ip, operator: params[:operator]
+          )
+          { 'success' => true, 'session' => revived.session, 'state' => revived.effective_state }.to_json
+        end
+
+        # Ownership / collaboration: attach an operator and set the session role.
+        # Roles: readonly, execute, owner.
+        post '/:session/ownership' do
+          hb = BeEF::Core::Models::HookedBrowser.where(session: params[:session]).first
+          error 404 if hb.nil?
+          body = JSON.parse(request.body.read)
+
+          role = body['role']
+          if role && BeEF::Core::Models::HookedBrowser::ROLES.include?(role)
+            hb.role = role
+            hb.owner = body['owner'] if body['owner']
+          end
+          BeEF::SessionManager.attach_operator(hb, body['operator']) if body['operator']
+          hb.save!
+
+          {
+            'success' => true,
+            'session' => hb.session,
+            'owner' => hb.owner,
+            'role' => hb.role,
+            'operators' => hb.operators_list
+          }.to_json
+        end
+
+        # Permission check used by operator UIs to decide which actions to show.
+        get '/:session/permissions' do
+          hb = BeEF::Core::Models::HookedBrowser.where(session: params[:session]).first
+          error 404 if hb.nil?
+          operator = params[:operator]
+          role = BeEF::SessionManager.effective_role(hb, operator)
+          {
+            'session' => hb.session,
+            'operator' => operator,
+            'role' => role,
+            'permissions' => BeEF::SessionManager::PERMISSIONS[role]
+          }.to_json
+        end
+
+        # Per-session delivery view: every instruction with its delivery state,
+        # attempts and timestamps. Distinguishes "sent" from "completed".
+        get '/:session/delivery' do
+          hb = BeEF::Core::Models::HookedBrowser.where(session: params[:session]).first
+          error 404 if hb.nil?
+
+          commands = BeEF::Core::Models::Command.where(hooked_browser_id: hb.id).map do |c|
+            {
+              'command_id' => c.id,
+              'delivery_state' => c.delivery_state_effective,
+              'attempts' => c.attempts || 0,
+              'sent_at' => c.sent_at,
+              'acked_at' => c.acked_at,
+              'completed_at' => c.completed_at
+            }
+          end
+          { 'session' => hb.session, 'commands' => commands }.to_json
         end
 
         #

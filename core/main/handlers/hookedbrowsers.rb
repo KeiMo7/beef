@@ -85,6 +85,20 @@ module BeEF
             hooked_browser = false
           end
 
+          # Stable session management is opt-in. When enabled, a session id unknown
+          # to this server (e.g. after a control-plane restart) is resolved against
+          # the browser-persisted identity instead of being treated as brand new.
+          if BeEF::Core::Handlers::SessionReaper.enabled? && !hooked_browser && hook_session_id
+            hooked_browser, outcome = BeEF::SessionManager.register_or_restore(
+              session: hook_session_id,
+              persistent_id: request.params['beefpid'] || hook_session_id,
+              ip: request.ip
+            )
+            # On reallocation tell the browser to adopt the canonical session id
+            # so subsequent polls target the correct session rather than the old one.
+            headers 'X-BeEF-Reallocated-Session' => hooked_browser.session if outcome == :reallocated
+          end
+
           # @note is a new browser so return instructions to set up the hook
           if hooked_browser
             # @note Check if we haven't seen this browser for a while, log an event if we haven't
@@ -110,8 +124,17 @@ module BeEF
             hooked_browser.save!
 
             # @note add all available command module instructions to the response
-            zombie_commands = BeEF::Core::Models::Command.where(hooked_browser_id: hooked_browser.id, instructions_sent: false)
-            zombie_commands.each { |command| add_command_instructions(command, hooked_browser) }
+            zombie_commands = if BeEF::Core::Handlers::SessionReaper.enabled?
+                                BeEF::DeliveryManager.pending_for(hooked_browser)
+                              else
+                                BeEF::Core::Models::Command.where(hooked_browser_id: hooked_browser.id, instructions_sent: false).to_a
+                              end
+            ack_timeout = BeEF::Core::Configuration.instance
+                                                   .get('beef.session_management.ack_timeout').to_i
+            zombie_commands.each do |command|
+              add_command_instructions(command, hooked_browser)
+              BeEF::DeliveryManager.mark_sent(command, ack_timeout) if BeEF::Core::Handlers::SessionReaper.enabled?
+            end
 
             # @note We dynamically get the list of all browser hook handler using the API and register them
             BeEF::API::Registrar.instance.fire(BeEF::API::Server::Hook, 'pre_hook_send', hooked_browser, @body, params, request, response)
@@ -121,7 +144,7 @@ module BeEF
             host_name = request.host
             unless BeEF::Filters.is_valid_hostname?(host_name)
               (print_error 'Invalid host name'
-              return)
+               return)
             end
 
             # Generate the hook js provided to the hookwed browser (the magic happens here)

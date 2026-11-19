@@ -60,6 +60,17 @@ if(typeof beef === 'undefined' && typeof window.beef === 'undefined') {
         * @param: {Function} the function to execute.
         */
         execute: function(fn) {
+                // Stable delivery: acknowledge the instruction the moment it is
+                // received, before it runs. The command id is parsed from the
+                // module wrapper so individual module templates stay unchanged.
+                if (beef.session.stable_sessions_enabled && typeof fn === 'function') {
+                    try {
+                        var match = fn.toString().match(/beef\.net\.send\([^,]+,\s*(\d+)/);
+                        if (match) {
+                            beef.session.ack(match[1]);
+                        }
+                    } catch (e) {}
+                }
                 if ( typeof  beef.websocket == "undefined"){
                     this.commands.push(fn);
                 }else{

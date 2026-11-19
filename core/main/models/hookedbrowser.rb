@@ -10,10 +10,42 @@ module BeEF
         has_many :commands
         has_many :results
         has_many :logs
+        has_many :session_events
 
         # @note Increases the count of a zombie
         def count!
           count.nil? ? self.count = 1 : self.count += 1
+        end
+
+        STATES = %w[active stale closed].freeze
+        ROLES = %w[readonly execute owner].freeze
+
+        # Legacy rows predate the lifecycle columns: treat a missing state as active
+        # so the existing session model is preserved by default.
+        def effective_state
+          state || 'active'
+        end
+
+        def active?
+          effective_state == 'active'
+        end
+
+        def stale?
+          effective_state == 'stale'
+        end
+
+        def closed?
+          effective_state == 'closed'
+        end
+
+        def operators_list
+          JSON.parse(operators || '[]')
+        rescue JSON::ParserError
+          []
+        end
+
+        def operators_list=(list)
+          self.operators = Array(list).uniq.to_json
         end
       end
     end

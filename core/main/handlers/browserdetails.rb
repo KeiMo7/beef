@@ -36,11 +36,30 @@ module BeEF
           end
 
           hooked_browser = HB.where(session: session_id).first
-          return unless hooked_browser.nil? # browser is already registered with framework
+          unless hooked_browser.nil?
+            # browser is already registered with framework. In the default model this
+            # is a no-op; with stable sessions enabled, confirm liveness so a
+            # control-plane restart / reconnect restores the same session.
+            BeEF::SessionManager.touch(hooked_browser, @data['request'].ip) if BeEF::Core::Handlers::SessionReaper.enabled?
+            return
+          end
+
+          if BeEF::Core::Handlers::SessionReaper.enabled?
+            persistent_id = get_param(@data['results'], 'beef.persistent_id') ||
+                            @data['request'].params['beefpid'] || session_id
+            hooked_browser, = BeEF::SessionManager.register_or_restore(
+              session: session_id,
+              persistent_id: persistent_id,
+              ip: @data['request'].ip
+            )
+            # register_or_restore may have reallocated a colliding id; the browser
+            # keeps using its supplied id while the session row holds the canonical one.
+            session_id = hooked_browser.session
+          end
 
           # create the structure representing the hooked browser
-          zombie = BeEF::Core::Models::HookedBrowser.new(ip: @data['request'].ip, session: session_id)
-          zombie.firstseen = Time.new.to_i
+          zombie = hooked_browser || BeEF::Core::Models::HookedBrowser.new(ip: @data['request'].ip, session: session_id)
+          zombie.firstseen = Time.new.to_i if !zombie.respond_to?(:firstseen) || zombie.firstseen.nil?
 
           # hooked window host name
           log_zombie_port = 0

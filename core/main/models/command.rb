@@ -13,6 +13,41 @@ module BeEF
         has_one :command_module
         has_one :hooked_browser
 
+        # Delivery lifecycle of a single instruction. Only `pending` and `sent`
+        # instructions are (re)delivered by the existing hook/websocket channels.
+        DELIVERY_STATES = %w[pending sent acked completed failed].freeze
+
+        def delivery_state_effective
+          delivery_state || 'pending'
+        end
+
+        def pending?
+          delivery_state_effective == 'pending'
+        end
+
+        def sent?
+          delivery_state_effective == 'sent'
+        end
+
+        def acked?
+          delivery_state_effective == 'acked'
+        end
+
+        def completed?
+          delivery_state_effective == 'completed'
+        end
+
+        def failed?
+          delivery_state_effective == 'failed'
+        end
+
+        # Instructions still owed to the browser. A timed-out send goes back to
+        # pending for a bounded retry instead of being silently dropped.
+        def self.deliverable(now = Time.now)
+          where(delivery_state: %w[pending sent])
+            .where('next_retry_at IS NULL OR next_retry_at <= ?', now)
+        end
+
         #
         # Save results and flag that the command has been run on the hooked browser
         #
@@ -46,6 +81,12 @@ module BeEF
             status: status,
             date: Time.now.to_i
           )
+
+          # Results are the final receipt: the instruction executed on the target.
+          # Guarded because the delivery columns only matter when the feature is used;
+          # legacy flows keep working when the migration columns are unused.
+          # legacy flows keep working when the delivery columns are unused.
+          BeEF::DeliveryManager.mark_completed(command, hooked_browser) if command.respond_to?(:delivery_state)
 
           s = show_status(status)
           log = "Hooked browser [id:#{hooked_browser.id}, ip:#{hooked_browser.ip}]"

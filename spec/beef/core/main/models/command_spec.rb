@@ -120,4 +120,31 @@ RSpec.describe BeEF::Core::Models::Command do
       end.to raise_error(TypeError, 'command is nil')
     end
   end
+
+  describe 'delivery state machine' do
+    let(:hb) { BeEF::Core::Models::HookedBrowser.create!(session: 'delivery-sm', ip: '127.0.0.1') }
+    let(:mod) { BeEF::Core::Models::CommandModule.create!(name: "sm_#{SecureRandom.hex(4)}", path: 'modules/sm/') }
+
+    it 'treats a legacy row without a state as pending' do
+      command = described_class.create!(hooked_browser_id: hb.id, command_module_id: mod.id)
+      expect(command.delivery_state_effective).to eq('pending')
+      expect(command).to be_pending
+    end
+
+    it 'exposes the full delivery lifecycle vocabulary' do
+      expect(described_class::DELIVERY_STATES).to eq(%w[pending sent acked completed failed])
+    end
+
+    it 'scopes deliverable commands by retry schedule' do
+      ready = described_class.create!(hooked_browser_id: hb.id, command_module_id: mod.id,
+                                      delivery_state: 'pending', instructions_sent: false)
+      waiting = described_class.create!(hooked_browser_id: hb.id, command_module_id: mod.id,
+                                        delivery_state: 'sent', next_retry_at: Time.now + 60,
+                                        instructions_sent: false)
+
+      ids = described_class.deliverable.map(&:id)
+      expect(ids).to include(ready.id)
+      expect(ids).not_to include(waiting.id)
+    end
+  end
 end

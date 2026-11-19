@@ -84,6 +84,11 @@ module BeEF
             hook_session_config['hook_file'] = config.get('beef.http.hook_file')
             hook_session_config['hook_session_name'] = config.get('beef.http.hook_session_name')
 
+            # @note stable session management settings consumed by client/session.js
+            hook_session_config['session_management_enable'] = config.get('beef.session_management.enable') == true
+            hook_session_config['session_tab_scope'] = config.get('beef.session_management.tab_scope') || 'browser'
+            hook_session_config['ack_handler'] = '/ack'
+
             # @note if http_port <> public_port in config ini, use the public_port
             if !hook_session_config['beef_public_port'].nil? && (hook_session_config['beef_port'] != hook_session_config['beef_public_port'])
               hook_session_config['beef_port'] = hook_session_config['beef_public_port']
